@@ -11,9 +11,9 @@ LETTER_COUNT = 63
 GRID_ROWS = 7
 GRID_COLS = 10
 ANCHOR_ROWS_PER_SET = 4 #GRID_ROWS // 2
-NUM_PROCESSES = 8 #GRID_ROWS
-MAX_GENERATION_CYCLES = 100000 # Maximum cycles to try generating anchors
-BACKTRACK_REPORT_INTERVAL = 10000 #100
+NUM_PROCESSES = 1 #GRID_ROWS
+MAX_GENERATION_CYCLES = 10 # Maximum cycles to try generating anchors
+BACKTRACK_REPORT_INTERVAL = 100 #100
 MAX_ROW_SEGMENT_PATTERNS = 200           # Maximum hash patterns to try per row
 MAX_WORDS_PER_SEGMENT = 1000            # Maximum words to try per segment
 MAX_HASH_PLACEMENT_ATTEMPTS = 500         # Number of hash placement retries per anchor set
@@ -23,7 +23,7 @@ MAX_HASH_PLACEMENT_ATTEMPTS = 500         # Number of hash placement retries per
 # GRID_ROWS = 3
 # GRID_COLS = 8
 # ANCHOR_ROWS_PER_SET = 2 #GRID_ROWS // 2
-# NUM_PROCESSES = 8 #GRID_ROWS
+# NUM_PROCESSES = 1 #GRID_ROWS
 # MAX_GENERATION_CYCLES = 10000 # Maximum cycles to try generating anchors
 # BACKTRACK_REPORT_INTERVAL = 10000 #100
 # MAX_ROW_SEGMENT_PATTERNS = 10           # Maximum hash patterns to try per row
@@ -306,7 +306,7 @@ def generate_anchor_sets(seed, puzzle_letter_counter, mask_dict, dict_by_length,
 
     while cycle_count < MAX_GENERATION_CYCLES:
         cycle_count += 1
-        if cycle_count % 100 == 0:
+        if cycle_count % 1 == 0:
             print(f"[Seed {seed}] Cycle {cycle_count}/{MAX_GENERATION_CYCLES} - {len(seen)} unique grids found")
         for anchor_rows in combinations(other_rows, ANCHOR_ROWS_PER_SET - 1):
             # print(f"[Seed {seed}] Trying anchor rows: {anchor_rows} with seed row: {seed_row}")

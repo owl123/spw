@@ -8,7 +8,7 @@ from pathlib     import Path
 from typing      import List, Tuple
 
 # ─── defaults ───────────────────────────────────────────────
-DEF_DICT = "Projects/SpaceWord/wCSW.txt"          # change on Windows
+DEF_DICT = "wCSW.txt"          # change on Windows
 #DEF_POOL = "AAACDDEEEGIIJMNOORRWZ"          # 21 tiles
 #DEF_POOL = 'AAABCDEEEIKLTTTUUUVWY' #250703
 DEF_POOL = 'ADEEEEEEGHIKNOQRRTUWY' #250704
