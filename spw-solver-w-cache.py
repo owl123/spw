@@ -247,25 +247,23 @@ def grid_hash_placement(grid, num_hashes, dict_by_length, max_hashes, mask_dict)
 
     return place_hashes_recursive(grid, num_hashes)
 
-# ---------- ROW CONTENT GENERATOR ----------
-def generate_row_content(row_idx, available, shuffled_dicts, max_hashes, used_words, grid, mask_dict):
-    row_length = grid.cols
+# ---------- LINE CONTENT GENERATOR (Generalized) ----------
+def generate_line_content(line_idx, is_row, available, shuffled_dicts, max_hashes, used_words, grid, mask_dict):
+    line_length = grid.cols if is_row else grid.rows
 
     hash_patterns = []
     for nh in range(0, max_hashes + 1):
-        patterns = list(combinations(range(row_length), nh))
+        patterns = list(combinations(range(line_length), nh))
         random.shuffle(patterns)
         hash_patterns.extend(patterns)
 
     for combo in hash_patterns[:MAX_ROW_SEGMENT_PATTERNS]:
-        fill_pattern = ['.'] * row_length
+        fill_pattern = ['.'] * line_length
         for pos in combo:
             fill_pattern[pos] = '#'
         segments = get_segments(fill_pattern)
-        segment_words = []
         temp_available = available.copy()
         temp_used_words = used_words.copy()
-
         fill_string = fill_pattern[:]
         valid = True
         for start, seg in segments:
@@ -279,95 +277,133 @@ def generate_row_content(row_idx, available, shuffled_dicts, max_hashes, used_wo
             while tries < min(len(candidates), MAX_WORDS_PER_SEGMENT):
                 word = random.choice(candidates)
                 if word not in temp_used_words and can_use_word(word, temp_available):
-                    # Only decrement letters that are actually placed
                     for i, ch in enumerate(word):
                         fill_string[start + i] = ch
                     use_word_on_segment(word, seg, temp_available)
                     temp_used_words.add(word)
-                    segment_words.append(word)
                     found = True
-                    break  # segment filled, move to next segment
+                    break
                 tries += 1
             if not found:
                 valid = False
-                break  # segment not filled, move to next pattern
+                break
         if not valid:
-            continue  # segment not filled, move to next pattern
+            continue
 
         temp_grid = grid.copy()
-        temp_grid.cells[row_idx] = fill_string[:]
-        if temp_grid.validate_vertical_segments(mask_dict):
-            return ''.join(fill_string), temp_grid, temp_available, temp_used_words
-    return None, None, None, None  # No valid fill found
+        if is_row:
+            temp_grid.cells[line_idx] = fill_string[:]
+        else:
+            for i in range(len(fill_string)):
+                temp_grid.cells[i][line_idx] = fill_string[i]
+        # Validate the orthogonal direction
+        if is_row:
+            if temp_grid.validate_vertical_segments(mask_dict):
+                return ''.join(fill_string), temp_grid, temp_available, temp_used_words
+        else:
+            # Validate horizontal segments
+            for r in range(temp_grid.rows):
+                row = temp_grid.cells[r]
+                for start, segment in get_segments(row):
+                    seg_str = ''.join(segment)
+                    if len(seg_str.strip('.')) <= 1:
+                        continue
+                    seg_mask = pattern_to_mask(seg_str)
+                    if not matches_any(seg_mask, mask_dict, len(seg_str)):
+                        break
+                else:
+                    continue
+                break
+            else:
+                return ''.join(fill_string), temp_grid, temp_available, temp_used_words
+    return None, None, None, None
 
-# ---------- ANCHOR GENERATION ----------
+# ---------- ANCHOR GENERATION (Alternating Rows/Cols) ----------
 def generate_anchor_sets(seed, puzzle_letter_counter, mask_dict, dict_by_length, seen):
     num_hashes = (GRID_ROWS * GRID_COLS) - LETTER_COUNT
     rows = list(range(GRID_ROWS))
-    seed_row = seed % GRID_ROWS
-    other_rows = [r for r in rows if r != seed_row]
+    cols = list(range(GRID_COLS))
     cycle_count = 0
+
+    # Decide anchor order: alternate rows and columns if aspect ratio < 2
+    aspect_ratio = GRID_COLS / GRID_ROWS
+    anchor_order = []
+    if aspect_ratio < 2:
+        # Alternate between rows and columns
+        min_dim = min(GRID_ROWS, GRID_COLS)
+        row_indices = list(range(GRID_ROWS))
+        col_indices = list(range(GRID_COLS))
+        random.shuffle(row_indices)
+        random.shuffle(col_indices)
+        for i in range(ANCHOR_ROWS_PER_SET):
+            if i % 2 == 0 and row_indices:
+                anchor_order.append(('row', row_indices.pop()))
+            elif col_indices:
+                anchor_order.append(('col', col_indices.pop()))
+    else:
+        # Use only rows (original logic)
+        seed_row = seed % GRID_ROWS
+        other_rows = [r for r in rows if r != seed_row]
+        anchor_rows = [seed_row] + random.sample(other_rows, ANCHOR_ROWS_PER_SET - 1)
+        anchor_order = [('row', r) for r in anchor_rows]
 
     while cycle_count < MAX_GENERATION_CYCLES:
         cycle_count += 1
         if cycle_count % CYCLE_REPORT_INTERVAL == 0:
             print(f"[Seed {seed}] Cycle {cycle_count}/{MAX_GENERATION_CYCLES} - {len(seen)} unique grids found")
-        for anchor_rows in combinations(other_rows, ANCHOR_ROWS_PER_SET - 1):
-            print(f"[Seed {seed}] Trying anchor rows: {anchor_rows} with seed row: {seed_row}")
-            anchor_row_order = [seed_row] + random.sample(list(anchor_rows), len(anchor_rows))
-            print(f"[Seed {seed}] Anchor row order: {anchor_row_order}")
-            grid = Grid(GRID_ROWS, GRID_COLS)
-            available = puzzle_letter_counter.copy()
-            used_words = set()
-            anchors = []
-            hashes_used = 0
-            valid = True
+        grid = Grid(GRID_ROWS, GRID_COLS)
+        available = puzzle_letter_counter.copy()
+        used_words = set()
+        anchors = []
+        hashes_used = 0
+        valid = True
 
-            for r in anchor_row_order:
-                
-                # print(f"[Seed {seed}] available letters: {available}, used words: {used_words}, hashes used: {hashes_used}")
-                result = generate_row_content(r, available, dict_by_length, num_hashes - hashes_used, used_words, grid, mask_dict)
-                # print(f"[Seed {seed}] Row {r} fill result: {result}")
-                fill_string, temp_grid, temp_available, temp_used_words = result
-                if fill_string is not None:
-                    grid = temp_grid
-                    available = temp_available
-                    used_words = temp_used_words
-                    anchors.append((fill_string, r))
-                    hashes_used += fill_string.count('#')
-                else:
-                    valid = False
-                    break
+        for anchor_type, idx in anchor_order:
+            result = generate_line_content(
+                idx,
+                is_row=(anchor_type == 'row'),
+                available=available,
+                shuffled_dicts=dict_by_length,
+                max_hashes=num_hashes - hashes_used,
+                used_words=used_words,
+                grid=grid,
+                mask_dict=mask_dict
+            )
+            fill_string, temp_grid, temp_available, temp_used_words = result
+            if fill_string is not None:
+                grid = temp_grid
+                available = temp_available
+                used_words = temp_used_words
+                anchors.append((fill_string, anchor_type, idx))
+                hashes_used += fill_string.count('#')
+            else:
+                valid = False
+                break
 
-            if not valid or len(anchors) < ANCHOR_ROWS_PER_SET:
+        if not valid or len(anchors) < ANCHOR_ROWS_PER_SET:
+            continue
+
+        empty_cells = sum(row.count('.') for row in grid.cells)
+        remaining_hashes = num_hashes - hashes_used
+        if empty_cells < remaining_hashes:
+            continue
+
+        for hash_attempt in range(MAX_HASH_PLACEMENT_ATTEMPTS):
+            grid_with_hashes = grid.copy()
+            if not grid_hash_placement(grid_with_hashes, 0, dict_by_length, remaining_hashes, mask_dict):
                 continue
 
-            empty_cells = sum(row.count('.') for row in grid.cells)
-            remaining_hashes = num_hashes - hashes_used
-            if empty_cells < remaining_hashes:
-                raise ValueError("Not enough empty cells for remaining hashes")
+            grid_tuple = grid_with_hashes.as_tuple()
+            if grid_tuple in seen:
+                continue
+            seen.append(grid_tuple)
+            print(grid_with_hashes.show())
 
-            # Try multiple random hash placements if backtracking fails
-            for hash_attempt in range(MAX_HASH_PLACEMENT_ATTEMPTS):
-                grid_with_hashes = grid.copy()
-                if not grid_hash_placement(grid_with_hashes, 0, dict_by_length, remaining_hashes, mask_dict):
-                    continue
-
-                grid_tuple = grid_with_hashes.as_tuple()
-                if grid_tuple in seen:
-                    continue
-                seen.append(grid_tuple)
-                # print(f"[Seed {seed}] New anchor set found (hash attempt {hash_attempt+1}):")
+            if backtrack_fill(seed, grid_with_hashes, dict_by_length, mask_dict, available):
+                print(f"[Seed {seed}] ✅ Solution Found:")
                 print(grid_with_hashes.show())
-
-                # print(f"Trying backtracking for anchor set: {anchors}")
-                if backtrack_fill(seed, grid_with_hashes, dict_by_length, mask_dict, available):
-                    print(f"[Seed {seed}] ✅ Solution Found:")
-                    print(grid_with_hashes.show())
-                    print(f"Anchors: {anchors}")
-                    return [(grid_with_hashes, anchors)]
-            # If all hash attempts fail, move to next anchor set
-
+                print(f"Anchors: {anchors}")
+                return [(grid_with_hashes, anchors)]
     return []
 
 # ---------- SOLVER UTILITIES ----------
