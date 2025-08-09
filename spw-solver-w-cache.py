@@ -10,11 +10,10 @@ from multiprocessing import Manager
 LETTER_COUNT = 63
 GRID_ROWS = 7
 GRID_COLS = 10
-ANCHOR_ROWS_PER_SET = 4 #GRID_ROWS // 2
 NUM_PROCESSES = 1 #GRID_ROWS
-MAX_GENERATION_CYCLES = 100000 # Maximum cycles to try generating anchors
+MAX_GENERATION_CYCLES = 1000 # Maximum cycles to try generating anchors
 CYCLE_REPORT_INTERVAL = 1
-BACKTRACK_REPORT_INTERVAL = 1 #100
+BACKTRACK_REPORT_INTERVAL = 100 #100
 MAX_ROW_SEGMENT_PATTERNS = 200           # Maximum hash patterns to try per row
 MAX_WORDS_PER_SEGMENT = 1000            # Maximum words to try per segment
 MAX_HASH_PLACEMENT_ATTEMPTS = 500         # Number of hash placement retries per anchor set
@@ -24,12 +23,11 @@ MAX_FAILED_STATE_CACHE = 100000  # Maximum number of failed states to remember
 # LETTER_COUNT = 21
 # GRID_ROWS = 3
 # GRID_COLS = 8
-# ANCHOR_ROWS_PER_SET = 2 #GRID_ROWS // 2
-# NUM_PROCESSES = 8 #GRID_ROWS
-# MAX_GENERATION_CYCLES = 10000 # Maximum cycles to try generating anchors
-# CYCLE_REPORT_INTERVAL = 1000
-# BACKTRACK_REPORT_INTERVAL = 10000 #100
-# MAX_ROW_SEGMENT_PATTERNS = 10           # Maximum hash patterns to try per row
+# NUM_PROCESSES = 1 #GRID_ROWS
+# MAX_GENERATION_CYCLES = 1000 # Maximum cycles to try generating anchors
+# CYCLE_REPORT_INTERVAL = 1
+# BACKTRACK_REPORT_INTERVAL = 1 #100
+# MAX_ROW_SEGMENT_PATTERNS = 50          # Maximum hash patterns to try per row
 # MAX_WORDS_PER_SEGMENT = 1000            # Maximum words to try per segment
 # MAX_HASH_PLACEMENT_ATTEMPTS = 100         # Number of hash placement retries per anchor set
 # MAX_FAILED_STATE_CACHE = 100000  # Maximum number of failed states to remember
@@ -173,6 +171,17 @@ class Grid:
         return "\n".join("".join(row) for row in self.cells)
 
 # ---------- DICTIONARY ----------
+def compute_letter_frequencies(dict_by_length):
+    freq = Counter()
+    for words in dict_by_length.values():
+        for word in words:
+            freq.update(set(word))
+    return freq
+
+def get_n_rarest_letters(dict_letter_freq, n=4):
+    """Return a list of the N rarest letters in the dictionary."""
+    return [ch for ch, _ in sorted(dict_letter_freq.items(), key=lambda x: x[1])[:n]]
+
 def preprocess_dictionary(path, available_letters):
     with open(path, "r") as f:
         words = [w.strip().upper() for w in f if w.strip().isalpha() and len(w.strip()) <= GRID_COLS]
@@ -184,21 +193,71 @@ def preprocess_dictionary(path, available_letters):
     for length in dict_by_length:
         dict_by_length[length].sort()
     mask_dict = build_bitmask_dict_by_length([w for words in dict_by_length.values() for w in words])
-    return dict_by_length, mask_dict
+    dict_letter_freq = compute_letter_frequencies(dict_by_length)
+    return dict_by_length, mask_dict, dict_letter_freq
 
 # ---------- RANDOM HASH PLACEMENT on GRID ----------
-def grid_hash_placement(grid, num_hashes, dict_by_length, max_hashes, mask_dict):
+def grid_hash_placement(grid, num_hashes, dict_by_length, max_hashes, mask_dict, dict_letter_freq):
     """
-    Place hashes randomly in the grid, ensuring all constraints are met.
+    Place hashes in the grid, first protecting rare-letter slots, then optimizing slot length.
     """
+    rare_letters = get_n_rarest_letters(dict_letter_freq, n=4)
+
     def get_empty_cells(grid):
         return [(r, c) for r in range(grid.rows) for c in range(grid.cols) if grid.cells[r][c] == '.']
+
     def place_hash(grid, pos):
         r, c = pos
         grid.cells[r][c] = '#'
+
     def remove_hash(grid, pos):
         r, c = pos
         grid.cells[r][c] = '.'
+
+    def slot_lengths(grid):
+        lengths = []
+        # Rows
+        for r in range(grid.rows):
+            row = grid.cells[r]
+            for _, segment in get_segments(row):
+                if '#' not in segment and len(segment) > 1:
+                    lengths.append(len(segment))
+        # Columns
+        for c in range(grid.cols):
+            col = [grid.cells[r][c] for r in range(grid.rows)]
+            for _, segment in get_segments(col):
+                if '#' not in segment and len(segment) > 1:
+                    lengths.append(len(segment))
+        return lengths
+
+    def rare_letter_slot_counts(grid, rare_letters, dict_by_length):
+        # For each rare letter, count how many slots could accommodate it
+        counts = {ch: 0 for ch in rare_letters}
+        # Rows
+        for r in range(grid.rows):
+            row = grid.cells[r]
+            for _, segment in get_segments(row):
+                seg_str = ''.join(segment)
+                if len(seg_str) > 1 and '.' in seg_str:
+                    for ch in rare_letters:
+                        pattern_mask = pattern_to_mask(seg_str)
+                        for w in dict_by_length[len(seg_str)]:
+                            if ch in w and mask_matches_pattern(word_to_mask(w), pattern_mask, len(seg_str)):
+                                counts[ch] += 1
+                                break
+        # Columns
+        for c in range(grid.cols):
+            col = [grid.cells[r][c] for r in range(grid.rows)]
+            for _, segment in get_segments(col):
+                seg_str = ''.join(segment)
+                if len(seg_str) > 1 and '.' in seg_str:
+                    for ch in rare_letters:
+                        pattern_mask = pattern_to_mask(seg_str)
+                        for w in dict_by_length[len(seg_str)]:
+                            if ch in w and mask_matches_pattern(word_to_mask(w), pattern_mask, len(seg_str)):
+                                counts[ch] += 1
+                                break
+        return counts
 
     def is_valid_hash_placement(grid):
         for c in range(grid.cols):
@@ -222,7 +281,7 @@ def grid_hash_placement(grid, num_hashes, dict_by_length, max_hashes, mask_dict)
                         return False
         return True
 
-    def place_hashes_recursive(grid, num_hashes_placed):
+    def place_hashes_recursive(grid, num_hashes_placed, stage=1):
         if num_hashes_placed == max_hashes:
             return is_valid_hash_placement(grid)
 
@@ -230,180 +289,139 @@ def grid_hash_placement(grid, num_hashes, dict_by_length, max_hashes, mask_dict)
         if not empty_cells:
             return False
 
-        random.shuffle(empty_cells)  # Pure random order
+        # Stage 1: Protect rare-letter slots
+        if stage == 1:
+            before_counts = rare_letter_slot_counts(grid, rare_letters, dict_by_length)
+            candidates = []
+            for pos in empty_cells:
+                place_hash(grid, pos)
+                after_counts = rare_letter_slot_counts(grid, rare_letters, dict_by_length)
+                if all(after_counts[ch] > 0 for ch in rare_letters):
+                    score = sum(before_counts[ch] - after_counts[ch] for ch in rare_letters)
+                    candidates.append((score, pos))
+                remove_hash(grid, pos)
+            if not candidates:
+                return place_hashes_recursive(grid, num_hashes_placed, stage=2)
+            # Shuffle candidates to randomize search order
+            random.shuffle(candidates)
+            # candidates.sort()
+            for _, pos in candidates:
+                place_hash(grid, pos)
+                if not is_connected(grid):
+                    remove_hash(grid, pos)
+                    continue
+                if not is_valid_hash_placement(grid):
+                    remove_hash(grid, pos)
+                    continue
+                if place_hashes_recursive(grid, num_hashes_placed + 1, stage=1):
+                    return True
+                remove_hash(grid, pos)
+            return False
 
-        for pos in empty_cells:
-            place_hash(grid, pos)
-            if not is_connected(grid):
+        # Stage 2: Slot length optimization
+        else:
+            candidates = []
+            for pos in empty_cells:
+                place_hash(grid, pos)
+                lengths = slot_lengths(grid)
+                if lengths:
+                    max_len = max(lengths)
+                    avg = sum(lengths) / len(lengths)
+                    variance = sum((l - avg) ** 2 for l in lengths) / len(lengths)
+                    score = max_len + variance
+                else:
+                    score = float('inf')
+                candidates.append((score, pos))
                 remove_hash(grid, pos)
-                continue
-            if not is_valid_hash_placement(grid):
+            # Shuffle candidates to randomize search order
+            random.shuffle(candidates)
+            for _, pos in candidates:
+                place_hash(grid, pos)
+                if not is_connected(grid):
+                    remove_hash(grid, pos)
+                    continue
+                if not is_valid_hash_placement(grid):
+                    remove_hash(grid, pos)
+                    continue
+                if place_hashes_recursive(grid, num_hashes_placed + 1, stage=2):
+                    return True
                 remove_hash(grid, pos)
-                continue
-            if place_hashes_recursive(grid, num_hashes_placed + 1):
-                return True
-            remove_hash(grid, pos)
-        return False
+            return False
 
     return place_hashes_recursive(grid, num_hashes)
 
-# ---------- LINE CONTENT GENERATOR (Generalized) ----------
-def generate_line_content(line_idx, is_row, available, shuffled_dicts, max_hashes, used_words, grid, mask_dict):
-    line_length = grid.cols if is_row else grid.rows
+# ---------- ANCHOR GENERATION (NEW LOGIC) ----------
+def anchor_word_score(word, dict_letter_freq, n=2):
+    freqs = sorted(dict_letter_freq[ch] for ch in set(word))
+    return sum(freqs[:n])
 
-    hash_patterns = []
-    for nh in range(0, max_hashes + 1):
-        patterns = list(combinations(range(line_length), nh))
-        random.shuffle(patterns)
-        hash_patterns.extend(patterns)
-
-    for combo in hash_patterns[:MAX_ROW_SEGMENT_PATTERNS]:
-        fill_pattern = ['.'] * line_length
-        for pos in combo:
-            fill_pattern[pos] = '#'
-        segments = get_segments(fill_pattern)
-        temp_available = available.copy()
-        temp_used_words = used_words.copy()
-        fill_string = fill_pattern[:]
-        valid = True
-        for start, seg in segments:
-            seg_len = len(seg)
-            found = False
-            candidates = shuffled_dicts.get(seg_len, [])[:MAX_WORDS_PER_SEGMENT]
-            if not candidates:
-                valid = False
-                break
-            tries = 0
-            while tries < min(len(candidates), MAX_WORDS_PER_SEGMENT):
-                word = random.choice(candidates)
-                if word not in temp_used_words and can_use_word(word, temp_available):
-                    for i, ch in enumerate(word):
-                        fill_string[start + i] = ch
-                    use_word_on_segment(word, seg, temp_available)
-                    temp_used_words.add(word)
-                    found = True
-                    break
-                tries += 1
-            if not found:
-                valid = False
-                break
-        if not valid:
-            continue
-
-        temp_grid = grid.copy()
-        if is_row:
-            temp_grid.cells[line_idx] = fill_string[:]
-        else:
-            for i in range(len(fill_string)):
-                temp_grid.cells[i][line_idx] = fill_string[i]
-        # Validate the orthogonal direction
-        if is_row:
-            if temp_grid.validate_vertical_segments(mask_dict):
-                return ''.join(fill_string), temp_grid, temp_available, temp_used_words
-        else:
-            # Validate horizontal segments
-            for r in range(temp_grid.rows):
-                row = temp_grid.cells[r]
-                for start, segment in get_segments(row):
-                    seg_str = ''.join(segment)
-                    if len(seg_str.strip('.')) <= 1:
-                        continue
-                    seg_mask = pattern_to_mask(seg_str)
-                    if not matches_any(seg_mask, mask_dict, len(seg_str)):
-                        break
-                else:
-                    continue
-                break
-            else:
-                return ''.join(fill_string), temp_grid, temp_available, temp_used_words
-    return None, None, None, None
-
-# ---------- ANCHOR GENERATION (Alternating Rows/Cols) ----------
-def generate_anchor_sets(seed, puzzle_letter_counter, mask_dict, dict_by_length, seen):
+def generate_anchor_sets(seed, puzzle_letter_counter, mask_dict, dict_by_length, dict_letter_freq, seen, anchor_row_offset):
     num_hashes = (GRID_ROWS * GRID_COLS) - LETTER_COUNT
-    rows = list(range(GRID_ROWS))
-    cols = list(range(GRID_COLS))
-    cycle_count = 0
 
-    # Decide anchor order: alternate rows and columns if aspect ratio < 2
-    aspect_ratio = GRID_COLS / GRID_ROWS
-    anchor_order = []
-    if aspect_ratio < 2:
-        # Alternate between rows and columns
-        min_dim = min(GRID_ROWS, GRID_COLS)
-        row_indices = list(range(GRID_ROWS))
-        col_indices = list(range(GRID_COLS))
-        random.shuffle(row_indices)
-        random.shuffle(col_indices)
-        for i in range(ANCHOR_ROWS_PER_SET):
-            if i % 2 == 0 and row_indices:
-                anchor_order.append(('row', row_indices.pop()))
-            elif col_indices:
-                anchor_order.append(('col', col_indices.pop()))
-    else:
-        # Use only rows (original logic)
-        seed_row = seed % GRID_ROWS
-        other_rows = [r for r in rows if r != seed_row]
-        anchor_rows = [seed_row] + random.sample(other_rows, ANCHOR_ROWS_PER_SET - 1)
-        anchor_order = [('row', r) for r in anchor_rows]
+    anchor_row = (seed + anchor_row_offset) % GRID_ROWS
 
-    while cycle_count < MAX_GENERATION_CYCLES:
-        cycle_count += 1
-        if cycle_count % CYCLE_REPORT_INTERVAL == 0:
-            print(f"[Seed {seed}] Cycle {cycle_count}/{MAX_GENERATION_CYCLES} - {len(seen)} unique grids found")
-        grid = Grid(GRID_ROWS, GRID_COLS)
-        available = puzzle_letter_counter.copy()
-        used_words = set()
-        anchors = []
-        hashes_used = 0
-        valid = True
+    # Build anchor row candidates once
+    row_candidates = [w for w in dict_by_length[GRID_COLS] if can_use_word(w, puzzle_letter_counter)]
+    row_candidates.sort(key=lambda w: anchor_word_score(w, dict_letter_freq, n=2))
+    total_attempts = [0]
 
-        for anchor_type, idx in anchor_order:
-            result = generate_line_content(
-                idx,
-                is_row=(anchor_type == 'row'),
-                available=available,
-                shuffled_dicts=dict_by_length,
-                max_hashes=num_hashes - hashes_used,
-                used_words=used_words,
-                grid=grid,
-                mask_dict=mask_dict
-            )
-            fill_string, temp_grid, temp_available, temp_used_words = result
-            if fill_string is not None:
-                grid = temp_grid
-                available = temp_available
-                used_words = temp_used_words
-                anchors.append((fill_string, anchor_type, idx))
-                hashes_used += fill_string.count('#')
-            else:
-                valid = False
-                break
+    for anchor_row_idx, anchor_row_word in enumerate(row_candidates):
+        if anchor_row_idx >= MAX_GENERATION_CYCLES:
+            break
+        for anchor_col in range(GRID_COLS):
+            grid = Grid(GRID_ROWS, GRID_COLS)
+            available = puzzle_letter_counter.copy()
+            used_words = set()
+            anchors = []
 
-        if not valid or len(anchors) < ANCHOR_ROWS_PER_SET:
-            continue
+            # Place anchor row word
+            grid.place(anchor_row_word, anchor_row, 0, 'H')
+            use_word_on_segment(anchor_row_word, ['.']*GRID_COLS, available)
+            used_words.add(anchor_row_word)
+            anchors.append((anchor_row_word, 'row', anchor_row))
 
-        empty_cells = sum(row.count('.') for row in grid.cells)
-        remaining_hashes = num_hashes - hashes_used
-        if empty_cells < remaining_hashes:
-            continue
+            # Find anchor column word that intersects at anchor_col
+            intersect_letter = anchor_row_word[anchor_col]
+            col_segment = [grid.cells[r][anchor_col] for r in range(GRID_ROWS)]
+            col_candidates = [
+                w for w in dict_by_length[GRID_ROWS]
+                if w[anchor_row] == intersect_letter and can_use_word_on_segment(w, col_segment, available) and w not in used_words
+            ]
+            if not col_candidates:
+                continue
+            col_candidates.sort(key=lambda w: anchor_word_score(w, dict_letter_freq, n=2))
+            anchor_col_word = col_candidates[0]
 
-        for hash_attempt in range(MAX_HASH_PLACEMENT_ATTEMPTS):
-            grid_with_hashes = grid.copy()
-            if not grid_hash_placement(grid_with_hashes, 0, dict_by_length, remaining_hashes, mask_dict):
+            # Place anchor column word
+            grid.place(anchor_col_word, 0, anchor_col, 'V')
+            use_word_on_segment(anchor_col_word, col_segment, available)  # Only mark new letters as used
+            used_words.add(anchor_col_word)
+            anchors.append((anchor_col_word, 'col', anchor_col))
+
+            # Check if enough empty cells for hashes
+            empty_cells = sum(row.count('.') for row in grid.cells)
+            remaining_hashes = num_hashes
+            if empty_cells < remaining_hashes:
                 continue
 
-            grid_tuple = grid_with_hashes.as_tuple()
-            if grid_tuple in seen:
-                continue
-            seen.append(grid_tuple)
-            print(grid_with_hashes.show())
+            # Try hash placements and backtracking fill
+            for hash_attempt in range(MAX_HASH_PLACEMENT_ATTEMPTS):
+                grid_with_hashes = grid.copy()
+                if not grid_hash_placement(grid_with_hashes, 0, dict_by_length, remaining_hashes, mask_dict, dict_letter_freq):
+                    continue
 
-            if backtrack_fill(seed, grid_with_hashes, dict_by_length, mask_dict, available):
-                print(f"[Seed {seed}] ✅ Solution Found:")
+                grid_tuple = grid_with_hashes.as_tuple()
+                if grid_tuple in seen:
+                    continue
+                seen.append(grid_tuple)
+                print(f"[Seed {seed}] Cycle {anchor_row_idx}, Col {anchor_col}, Hash {hash_attempt}: Trying new hash pattern:")
                 print(grid_with_hashes.show())
-                print(f"Anchors: {anchors}")
-                return [(grid_with_hashes, anchors)]
+
+                if backtrack_fill(seed, grid_with_hashes, dict_by_length, mask_dict, available, 0, total_attempts, anchor_row_idx, anchor_col, hash_attempt):
+                    print(f"[Seed {seed}] ✅ Solution Found:")
+                    print(grid_with_hashes.show())
+                    print(f"Anchors: {anchors}")
+                    return [(grid_with_hashes, anchors)]
     return []
 
 # ---------- SOLVER UTILITIES ----------
@@ -448,6 +466,19 @@ def validate_full_grid(grid, dict_by_length):
 
 def can_use_word(word, available):
     word_count = Counter(word)
+    for ch, cnt in word_count.items():
+        if available[ch] < cnt:
+            return False
+    return True
+
+def can_use_word_on_segment(word, segment, available):
+    """
+    Only require available letters for positions where segment has '.'.
+    """
+    word_count = Counter()
+    for i, ch in enumerate(word):
+        if segment[i] == '.':
+            word_count[ch] += 1
     for ch, cnt in word_count.items():
         if available[ch] < cnt:
             return False
@@ -511,47 +542,85 @@ def check_endgame(grid, dict_by_length):
     return True
 
 # ---------- BACKTRACKING ----------
-def find_mrv_segment(grid, available, dict_by_length, mask_dict):
+def find_mrv_segment(grid, available, dict_by_length, mask_dict, rare_letters=None):
     """
     Find the segment (horizontal or vertical) with the fewest candidate words (MRV heuristic).
+    If rare_letters is provided, prefer segments containing rare letters as a tiebreaker.
     Returns a tuple: (direction, row/col, start, candidates, pattern)
     """
-    min_candidates = float('inf')
+    min_score = float('inf')
     best = None
 
-    # Check all horizontal segments
-    for r in range(grid.rows):
-        row = grid.cells[r]
-        for start, segment in get_segments(row):
-            seg_str = ''.join(segment)
-            if len(seg_str) > 1 and '.' in seg_str and '#' not in seg_str:
-                pattern_mask = pattern_to_mask(seg_str)
-                candidates = [
-                    w for w in dict_by_length[len(seg_str)]
-                    if mask_matches_pattern(word_to_mask(w), pattern_mask, len(seg_str)) and can_use_word(w, available)
-                ]
-                if 0 < len(candidates) < min_candidates:
-                    min_candidates = len(candidates)
-                    best = ('H', r, start, candidates, seg_str)
-
-    # Check all vertical segments
-    for c in range(grid.cols):
-        col = [grid.cells[r][c] for r in range(grid.rows)]
-        for start, segment in get_segments(col):
-            seg_str = ''.join(segment)
-            if len(seg_str) > 1 and '.' in seg_str and '#' not in seg_str:
-                pattern_mask = pattern_to_mask(seg_str)
-                candidates = [
-                    w for w in dict_by_length[len(seg_str)]
-                    if mask_matches_pattern(word_to_mask(w), pattern_mask, len(seg_str)) and can_use_word(w, available)
-                ]
-                if 0 < len(candidates) < min_candidates:
-                    min_candidates = len(candidates)
-                    best = ('V', c, start, candidates, seg_str)
+    # Iterate over both directions: ('H', rows, row accessor), ('V', cols, col accessor)
+    for direction, outer_range, accessor in [
+        ('H', range(grid.rows), lambda idx: grid.cells[idx]),
+        ('V', range(grid.cols), lambda idx: [grid.cells[r][idx] for r in range(grid.rows)])
+    ]:
+        for idx in outer_range:
+            line = accessor(idx)
+            for start, segment in get_segments(line):
+                seg_str = ''.join(segment)
+                if len(seg_str) > 1 and '.' in seg_str and '#' not in seg_str:
+                    #print(f"\nDEBUG: Checking segment '{seg_str}' at {direction} {idx}, start {start}")
+                    #print(f"DEBUG: Available letters: {dict(available)}")
+                    #print(f"DEBUG: {len(dict_by_length[len(seg_str)])} words of length {len(seg_str)} in dict")
+                    pattern_mask = pattern_to_mask(seg_str)
+                    # Show a few possible words that match the pattern (ignoring available for now)
+                    sample_matches = [
+                        w for w in dict_by_length[len(seg_str)]
+                        if mask_matches_pattern(word_to_mask(w), pattern_mask, len(seg_str))
+                    ][:10]
+                    #print(f"DEBUG: Sample pattern matches (ignoring available): {sample_matches}")
+                    candidates = [
+                        w for w in dict_by_length[len(seg_str)]
+                        if mask_matches_pattern(word_to_mask(w), pattern_mask, len(seg_str)) and can_use_word_on_segment(w, seg_str, available)
+                    ]
+                    #print(f"DEBUG: {len(candidates)} candidates after available check: {candidates[:10]}")
+                    if len(candidates) == 0:
+                        #print(f"DEBUG: No fillable segment at {direction} {idx}, start {start}, pattern '{seg_str}'")
+                        return None
+                    score = len(candidates) / (len(seg_str) ** 2)
+                    if score < min_score:
+                        min_score = score
+                        best = (direction, idx, start, candidates, seg_str)
 
     return best  # or None if no fillable segment found
 
-def backtrack_fill(seed, grid, dict_by_length, mask_dict, available, attempt=[0], failed_states=None):
+def is_crossing_valid(grid, dict_by_length, mask_dict, r, c, direction):
+    # Check the crossing segment at (r, c)
+    if direction == 'H':
+        # Check vertical segment
+        col = [grid.cells[row][c] for row in range(grid.rows)]
+        for start, segment in get_segments(col):
+            if start <= r < start + len(segment):
+                seg_str = ''.join(segment)
+                if len(seg_str) > 1:
+                    if '.' not in seg_str:
+                        if seg_str not in dict_by_length[len(seg_str)]:
+                            return False
+                    else:
+                        pattern_mask = pattern_to_mask(seg_str)
+                        if not matches_any(pattern_mask, mask_dict, len(seg_str)):
+                            return False
+                break
+    else:
+        # Check horizontal segment
+        row = grid.cells[r]
+        for start, segment in get_segments(row):
+            if start <= c < start + len(segment):
+                seg_str = ''.join(segment)
+                if len(seg_str) > 1:
+                    if '.' not in seg_str:
+                        if seg_str not in dict_by_length[len(seg_str)]:
+                            return False
+                    else:
+                        pattern_mask = pattern_to_mask(seg_str)
+                        if not matches_any(pattern_mask, mask_dict, len(seg_str)):
+                            return False
+                break
+    return True
+
+def backtrack_fill(seed, grid, dict_by_length, mask_dict, available, local_attempt, total_attempt, cycle, col, hash_attempt, failed_states=None):
     if failed_states is None:
         failed_states = OrderedDict()
 
@@ -571,9 +640,11 @@ def backtrack_fill(seed, grid, dict_by_length, mask_dict, available, attempt=[0]
         return check_endgame(grid, dict_by_length)
 
     r, c = empty
-    attempt[0] += 1
-    if attempt[0] % BACKTRACK_REPORT_INTERVAL == 0:
-        print(f"[Seed {seed}] Backtracking attempts: {attempt[0]} (coverage: {grid.coverage():.2f})")
+    local_attempt += 1
+    total_attempt[0] += 1
+
+    if local_attempt % BACKTRACK_REPORT_INTERVAL == 0:
+        print(f"[Seed {seed}] Cycle {cycle}, Col {col}, Hash {hash_attempt}: Backtracking attempts: {local_attempt} (Total: {total_attempt[0]}, coverage: {grid.coverage():.2f})")
         print("Current grid state:")
         print(grid.show())
         print("-" * 20)
@@ -592,13 +663,31 @@ def backtrack_fill(seed, grid, dict_by_length, mask_dict, available, attempt=[0]
         if direction == 'H':
             segment = [grid.cells[idx][start + i] for i in range(len(word))]
             new_grid.place(word, idx, start, 'H')
+            # Check all crossing vertical segments for each filled cell
+            valid = True
+            for i in range(len(word)):
+                if segment[i] == '.':
+                    if not is_crossing_valid(new_grid, dict_by_length, mask_dict, idx, start + i, 'H'):
+                        valid = False
+                        break
+            if not valid:
+                continue
         else:
             segment = [grid.cells[start + i][idx] for i in range(len(word))]
             new_grid.place(word, start, idx, 'V')
-       
+            # Check all crossing horizontal segments for each filled cell
+            valid = True
+            for i in range(len(word)):
+                if segment[i] == '.':
+                    if not is_crossing_valid(new_grid, dict_by_length, mask_dict, start + i, idx, 'V'):
+                        valid = False
+                        break
+            if not valid:
+                continue
+
         if is_valid_grid_segments(new_grid, dict_by_length):
             use_word_on_segment(word, segment, new_available)
-            if backtrack_fill(seed, new_grid, dict_by_length, mask_dict, new_available, attempt, failed_states):
+            if backtrack_fill(seed, new_grid, dict_by_length, mask_dict, new_available, local_attempt, total_attempt, cycle, col, hash_attempt):
                 grid.cells = new_grid.cells
                 return True
 
@@ -624,7 +713,7 @@ def solve_spaceword(letters, dictionary_path="wCSW.txt"):
 
     print("Loading dictionary...")
     puzzle_letter_counter = Counter(letters)
-    dict_by_length, mask_dict = preprocess_dictionary(dictionary_path, puzzle_letter_counter)
+    dict_by_length, mask_dict, dict_letter_freq = preprocess_dictionary(dictionary_path, puzzle_letter_counter)
     for length in dict_by_length:
         print(f"Dictionary length {length}: {len(dict_by_length[length])} words")
 
@@ -633,8 +722,9 @@ def solve_spaceword(letters, dictionary_path="wCSW.txt"):
     seen = manager.list()  # Shared set to avoid duplicate grids
     start_time = time.time()
     seeds = list(range(NUM_PROCESSES))
+    anchor_row_offset = random.randint(1, GRID_ROWS)
     seed_args = [
-        (seed, puzzle_letter_counter, mask_dict, dict_by_length, seen)
+        (seed, puzzle_letter_counter, mask_dict, dict_by_length, dict_letter_freq, seen, anchor_row_offset)
         for seed in seeds
     ]
 
@@ -663,5 +753,6 @@ def solve_spaceword(letters, dictionary_path="wCSW.txt"):
 
 if __name__ == "__main__":
     puzzle_letters = "AAAAABBBCCDDDEEEEEEEEFFFGGGHHHIILMMMNNOOOOPPPQRSSSSTTTTUUUVXYYZ"
-    # puzzle_letters = "ADEEEEEEGHIKNOQRRTUWY"
+    #puzzle_letters = "ADEEEEEEGHIKNOQRRTUWY"
+    # puzzle_letters = "AACDEEEGHIIKNOQRRTUWY"
     solve_spaceword(puzzle_letters, "wCSW.txt")
