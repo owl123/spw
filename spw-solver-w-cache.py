@@ -7,30 +7,28 @@ from itertools import combinations
 from multiprocessing import Manager
 
 # ----------------- CONFIG (63-letter) -----------------
-# LETTER_COUNT = 63
-# GRID_ROWS = 7
-# GRID_COLS = 10
-# NUM_PROCESSES = 1 #GRID_ROWS
-# MAX_GENERATION_CYCLES = 2 # Maximum cycles to try generating anchors
-# CYCLE_REPORT_INTERVAL = 1
-# BACKTRACK_REPORT_INTERVAL = 1 #100
-# MAX_ROW_SEGMENT_PATTERNS = 200           # Maximum hash patterns to try per row
-# MAX_WORDS_PER_SEGMENT = 1000            # Maximum words to try per segment
-# MAX_HASH_PLACEMENT_ATTEMPTS = 500         # Number of hash placement retries per anchor set
-# MAX_FAILED_STATE_CACHE = 100000  # Maximum number of failed states to remember
-
-# ----------------- CONFIG (21-letter) -----------------
-LETTER_COUNT = 21
-GRID_ROWS = 3
-GRID_COLS = 8
+LETTER_COUNT = 63
+GRID_ROWS = 8
+GRID_COLS = 10
 NUM_PROCESSES = 1 #GRID_ROWS
-MAX_GENERATION_CYCLES = 2 # Maximum cycles to try generating anchors
+MAX_GENERATION_CYCLES = 10000 # Maximum cycles to try generating anchors
 CYCLE_REPORT_INTERVAL = 1
 BACKTRACK_REPORT_INTERVAL = 1 #100
-MAX_ROW_SEGMENT_PATTERNS = 50          # Maximum hash patterns to try per row
-MAX_WORDS_PER_SEGMENT = 1000            # Maximum words to try per segment
 MAX_HASH_PLACEMENT_ATTEMPTS = 500         # Number of hash placement retries per anchor set
-MAX_FAILED_STATE_CACHE = 100000  # Maximum number of failed states to remember
+MAX_BACKTRACK_ATTEMPTS_PER_PATTERN = 10**5  # Adjust based on problem size and resources
+MAX_FAILED_STATE_CACHE = 10**5  # Maximum number of failed states to remember
+
+# ----------------- CONFIG (21-letter) -----------------
+# LETTER_COUNT = 21
+# GRID_ROWS = 3
+# GRID_COLS = 8
+# NUM_PROCESSES = 1
+# MAX_GENERATION_CYCLES = 1000 # Maximum cycles to try generating anchors
+# CYCLE_REPORT_INTERVAL = 1
+# BACKTRACK_REPORT_INTERVAL = 1 #100
+# MAX_HASH_PLACEMENT_ATTEMPTS = 100         # Number of hash placement retries per anchor set
+# MAX_BACKTRACK_ATTEMPTS_PER_PATTERN = 10**5  # Adjust based on problem size and resources
+# MAX_FAILED_STATE_CACHE = 10**4  # Maximum number of failed states to remember
 
 # ---------- OTHER GLOBALS ----------
 BITS_PER_CHAR = 5
@@ -240,12 +238,8 @@ def grid_hash_placement(grid, dict_by_length, max_hashes, mask_dict, dict_letter
 
     candidate_grids.sort(key=lambda x: x[0])
 
-    for score, g in candidate_grids[:MAX_HASH_PLACEMENT_ATTEMPTS]:
-        available = Counter(ch for row in g.cells for ch in row if ch != '#' and ch != '.')
-        dummy_total = [0]
-        rare_letters = get_n_rarest_letters(dict_letter_freq, n=4)
-        if backtrack_fill(0, g, dict_by_length, mask_dict, available, 0, dummy_total, 0, 0, 0, rare_letters=rare_letters):
-            yield g  # Yield the filled grid
+    for _, g in candidate_grids[:MAX_HASH_PLACEMENT_ATTEMPTS]:
+        yield g  # Yield the filled grid
 
 # ---------- ANCHOR GENERATION (NEW LOGIC) ----------
 def anchor_word_score(word, dict_letter_freq, n=2):
@@ -264,7 +258,8 @@ def generate_anchor_sets(seed, puzzle_letter_counter, mask_dict, dict_by_length,
     total_attempts = [0]
 
     for anchor_row_idx, anchor_row_word in enumerate(row_candidates):
-        if anchor_row_idx >= MAX_GENERATION_CYCLES:
+        cycle = anchor_row_idx + 1
+        if cycle >= MAX_GENERATION_CYCLES:
             break
 
         # Place anchor row word ONCE per anchor_row_word
@@ -310,21 +305,20 @@ def generate_anchor_sets(seed, puzzle_letter_counter, mask_dict, dict_by_length,
             if empty_cells < remaining_hashes:
                 continue
 
-            hash_attempt = 0
+            hash_attempts = 0
             for grid_with_hashes in grid_hash_placement(grid, dict_by_length, remaining_hashes, mask_dict, dict_letter_freq):
                 grid_tuple = grid_with_hashes.as_tuple()
                 if grid_tuple in seen:
                     continue
                 seen.append(grid_tuple)
-                print(f"[Seed {seed}] Cycle {anchor_row_idx}, Col {anchor_col}, Hash {hash_attempt}: Trying new hash pattern:")
-                print(grid_with_hashes.show())
+                total_attempts[0] += 1
+                hash_attempts += 1
 
-                if backtrack_fill(seed, grid_with_hashes, dict_by_length, mask_dict, available.copy(), 0, total_attempts, anchor_row_idx, anchor_col, hash_attempt, rare_letters=get_n_rarest_letters(dict_letter_freq, n=4)):
+                if backtrack_fill(seed, grid_with_hashes, dict_by_length, mask_dict, available.copy(), 0, total_attempts, cycle, anchor_col, hash_attempts, rare_letters=get_n_rarest_letters(dict_letter_freq, n=4)):
                     print(f"[Seed {seed}] ✅ Solution Found:")
                     print(grid_with_hashes.show())
                     print(f"Anchors: {anchors}")
                     return [(grid_with_hashes, anchors)]
-                hash_attempt += 1
     return []
 
 # ---------- SOLVER UTILITIES ----------
@@ -514,7 +508,7 @@ def is_crossing_valid(grid, dict_by_length, mask_dict, r, c, direction):
                 break
     return True
 
-def backtrack_fill(seed, grid, dict_by_length, mask_dict, available, local_attempt, total_attempt, cycle, col, hash_attempt, failed_states=None, rare_letters=None):
+def backtrack_fill(seed, grid, dict_by_length, mask_dict, available, local_attempt, total_attempt, cycle, current_col, hash_attempt, failed_states=None, rare_letters=None):
     if failed_states is None:
         failed_states = OrderedDict()
 
@@ -533,12 +527,16 @@ def backtrack_fill(seed, grid, dict_by_length, mask_dict, available, local_attem
     if not empty:
         return check_endgame(grid, dict_by_length)
 
-    r, c = empty
     local_attempt += 1
     total_attempt[0] += 1
+    # Check if total attempts exceed the maximum allowed
+    if total_attempt[0] > MAX_BACKTRACK_ATTEMPTS_PER_PATTERN:
+        print(f"[Seed {seed}] Exceeded maximum backtracking attempts ({MAX_BACKTRACK_ATTEMPTS_PER_PATTERN}). "
+            f"Cycle: {cycle}, Col: {current_col}, Hash Attempt: {hash_attempt}. Terminating backtracking.")
+        return False
 
     if local_attempt % BACKTRACK_REPORT_INTERVAL == 0:
-        print(f"[Seed {seed}] Cycle {cycle}, Col {col}, Hash {hash_attempt}: Backtracking attempts: {local_attempt} (Total: {total_attempt[0]}, coverage: {grid.coverage():.2f})")
+        print(f"[Seed {seed}] Cycle {cycle}, Col {current_col}, Hash {hash_attempt}: Backtracking attempts: {local_attempt} (Total: {total_attempt[0]}, coverage: {grid.coverage():.2f})")
         print("Current grid state:")
         print(grid.show())
         print("-" * 20)
@@ -589,7 +587,7 @@ def backtrack_fill(seed, grid, dict_by_length, mask_dict, available, local_attem
 
         if is_valid_grid_segments(new_grid, dict_by_length):
             use_word_on_segment(word, segment, new_available)
-            if backtrack_fill(seed, new_grid, dict_by_length, mask_dict, new_available, local_attempt, total_attempt, cycle, col, hash_attempt, failed_states, rare_letters=rare_letters):
+            if backtrack_fill(seed, new_grid, dict_by_length, mask_dict, new_available, local_attempt, total_attempt, cycle, current_col, hash_attempt, failed_states, rare_letters=rare_letters):
                 grid.cells = new_grid.cells
                 return True
 
@@ -654,7 +652,7 @@ def solve_spaceword(letters, dictionary_path="wCSW.txt"):
             os._exit(1)
 
 if __name__ == "__main__":
-    # puzzle_letters = "AAAAABBBCCDDDEEEEEEEEFFFGGGHHHIILMMMNNOOOOPPPQRSSSSTTTTUUUVXYYZ"
-    puzzle_letters = "ADEEEEEEGHIKNOQRRTUWY"
+    puzzle_letters = "AAAAABBBCCDDDEEEEEEEEFFFGGGHHHIILMMMNNOOOOPPPQRSSSSTTTTUUUVXYYZ"
+    # puzzle_letters = "ADEEEEEEGHIKNOQRRTUWY"
     # puzzle_letters = "AACDEEEGHIIKNOQRRTUWY"
     solve_spaceword(puzzle_letters, "wCSW.txt")
