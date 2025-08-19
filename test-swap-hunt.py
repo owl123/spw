@@ -10,32 +10,32 @@ from functools import lru_cache
 from tdict import tdict
 
 # ----------------- CONFIG (63-letter) -----------------
-# LETTER_COUNT = 63
-# GRID_ROWS = 7
-# GRID_COLS = 10
-# NUM_PROCESSES = 1 #GRID_ROWS
-# MAX_GENERATION_CYCLES = 20              # Maximum cycles to try generating anchors
-# CYCLE_REPORT_INTERVAL = 1
-# BACKTRACK_REPORT_INTERVAL = 100 #100
-# MAX_HASH_PLACEMENT_ATTEMPTS = 30            # Number of hash placement retries per anchor set
-# BACKTRACK_THRESHOLD_CHECKPOINTS = [200, 300, 1000, 10000, 20000]  # At these checkpoints, the coverage will be compared with the threshold.  Failing to surpass the threshold will trigger stop backtracking.
-# BACKTRACK_COVERAGE_THRESHOLD = [.70, .80, .90, .95, .96] # Minimum coverage threshold to continue backtracking
-# MAX_BACKTRACK_ATTEMPTS_PER_PATTERN = 20000   # Ultimate maximum backtrack attempts per pattern
-# SAVAGE_BACKTRACKING_THRESHOLD = .95 # Minimum coverage threshold to trigger savage backtracking (1 = no savage backtracking)
+LETTER_COUNT = 63
+GRID_ROWS = 7
+GRID_COLS = 10
+NUM_PROCESSES = 1 #GRID_ROWS
+MAX_GENERATION_CYCLES = 20              # Maximum cycles to try generating anchors
+CYCLE_REPORT_INTERVAL = 1
+BACKTRACK_REPORT_INTERVAL = 100 #100
+MAX_HASH_PLACEMENT_ATTEMPTS = 30            # Number of hash placement retries per anchor set
+BACKTRACK_THRESHOLD_CHECKPOINTS = [2000, 3000, 5000, 10000, 20000]  # At these checkpoints, the coverage will be compared with the threshold.  Failing to surpass the threshold will trigger stop backtracking.
+BACKTRACK_COVERAGE_THRESHOLD = [.70, .80, .90, .95, .96] # Minimum coverage threshold to continue backtracking
+MAX_BACKTRACK_ATTEMPTS_PER_PATTERN = 20000   # Ultimate maximum backtrack attempts per pattern
+SAVAGE_BACKTRACKING_THRESHOLD = .95 # Minimum coverage threshold to trigger savage backtracking (1 = no savage backtracking)
 
 # ----------------- CONFIG (21-letter) -----------------
-LETTER_COUNT = 21
-GRID_ROWS = 4
-GRID_COLS = 6
-NUM_PROCESSES = 1
-MAX_GENERATION_CYCLES = 200 # Maximum cycles to try generating anchors
-CYCLE_REPORT_INTERVAL = 1
-BACKTRACK_REPORT_INTERVAL = 1 #100
-MAX_HASH_PLACEMENT_ATTEMPTS = 30         # Number of hash placement retries per anchor set
-BACKTRACK_THRESHOLD_CHECKPOINTS = [100, 200, 300]  # At these checkpoints, the coverage will be compared with the threshold.  Failing to surpass the threshold will trigger stop backtracking.
-BACKTRACK_COVERAGE_THRESHOLD = [.70, .80, .90] # Minimum coverage threshold to continue backtracking
-MAX_BACKTRACK_ATTEMPTS_PER_PATTERN = 1000   # Ultimate maximum backtrack attempts per pattern
-SAVAGE_BACKTRACKING_THRESHOLD = 1 # Minimum coverage threshold to trigger savage backtracking (1 = no savage backtracking)
+# LETTER_COUNT = 21
+# GRID_ROWS = 3
+# GRID_COLS = 8
+# NUM_PROCESSES = 1
+# MAX_GENERATION_CYCLES = 100 # Maximum cycles to try generating anchors
+# CYCLE_REPORT_INTERVAL = 1
+# BACKTRACK_REPORT_INTERVAL = 1 #100
+# MAX_HASH_PLACEMENT_ATTEMPTS = 30         # Number of hash placement retries per anchor set
+# BACKTRACK_THRESHOLD_CHECKPOINTS = [100, 200, 300]  # At these checkpoints, the coverage will be compared with the threshold.  Failing to surpass the threshold will trigger stop backtracking.
+# BACKTRACK_COVERAGE_THRESHOLD = [.70, .80, .90] # Minimum coverage threshold to continue backtracking
+# MAX_BACKTRACK_ATTEMPTS_PER_PATTERN = 1000   # Ultimate maximum backtrack attempts per pattern
+# SAVAGE_BACKTRACKING_THRESHOLD = .9 # Minimum coverage threshold to trigger savage backtracking (1 = no savage backtracking)
 
 # ---------- OTHER GLOBALS ----------
 stop_backtracking = False
@@ -420,7 +420,6 @@ def is_crossing_valid(line, lex):
                 # print(f"Segment '{seg_str}' not found in dictionary.")
                 return False
     return True
-from itertools import permutations, combinations
 
 def swap_hunt(grid, initial_letters_str, dictionary_words):
     """
@@ -461,6 +460,7 @@ def swap_hunt(grid, initial_letters_str, dictionary_words):
         # Iterate over all permutations of the l-tuple
         for permuted_l_tuple in permutations(l_tuple):
             print(f"Trying swap with l-tuple {permuted_l_tuple} in p-tuple {p_tuple} and ep-tuple {ep_tuple}")
+            print(f"Grid state before swap:\n{grid.show()}")
 
             # Create a working copy of the grid
             working_grid = grid.copy()
@@ -477,7 +477,7 @@ def swap_hunt(grid, initial_letters_str, dictionary_words):
             if not first_permutation_printed:
                 print(f"Grid state after swap:\n{working_grid.show()}")
                 first_permutation_printed = True
-                
+
             # Validate intersecting rows and columns
             rows_to_check = {r for r, _ in p_tuple + ep_tuple}
             cols_to_check = {c for _, c in p_tuple + ep_tuple}
@@ -502,6 +502,8 @@ def swap_hunt(grid, initial_letters_str, dictionary_words):
                     print("Valid swap found!")
                     print(working_grid.show())
                     return working_grid
+            # else:
+            #     l_tuple = el_tuple
   
     print(f"No valid swap found for grid:\n{grid.show()} and letters remained: {initial_letters_str}")
     return None
@@ -675,9 +677,42 @@ def solve_spaceword(letters, dictionary_path="wCSW.txt"):
     if not found:
         print("❌ No solution found yet. Consider adjusting the parameters.")
 
+# if __name__ == "__main__":
+#     puzzle_letters = "AAAAABBBCCDDDEEEEEEEEFFFGGGHHHIILMMMNNOOOOPPPQRSSSSTTTTUUUVXYYZ"
+#     # puzzle_letters = "ADEEEEEEGHIKNOQRRTUWY"
+#     # puzzle_letters = "AACDEEEGHIIKNOQRRTUWY"
+#     solve_spaceword(puzzle_letters, "wCSW.txt")
+
+
 if __name__ == "__main__":
-    # puzzle_letters = "AAAAABBBCCDDDEEEEEEEEFFFGGGHHHIILMMMNNOOOOPPPQRSSSSTTTTUUUVXYYZ"
+    # Provided variables
     puzzle_letters = "ABDEEEGIJLLMOOOOQSTUV"
-    # puzzle_letters = "ADEEEEEEGHIKNOQRRTUWY"
-    # puzzle_letters = "AACDEEEGHIIKNOQRRTUWY"
-    solve_spaceword(puzzle_letters, "wCSW.txt")
+    letters_remained = "JOO"
+    grid_str = """
+    Q#GOO.
+    UT#M.L
+    I#L.BE
+    DEAVES
+    """
+
+    # Parse the grid from the string
+    grid_lines = [line.strip() for line in grid_str.strip().split("\n")]
+    rows = len(grid_lines)
+    cols = len(grid_lines[0])
+    grid = Grid(rows, cols)
+    for r, line in enumerate(grid_lines):
+        grid.cells[r] = list(line)
+
+    # Initialize the dictionary
+    dictionary_path = "wCSW.txt"  # Path to the dictionary file
+    lex = tdict(dictionary_path, puzzle_letters, len_min=1, len_max=cols)
+
+    # Run swap_hunt
+    result = swap_hunt(grid, letters_remained, lex.words)
+
+    # Print the result
+    if result:
+        print("Valid swap found!")
+        print(result.show())
+    else:
+        print("No valid swap found.")
